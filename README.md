@@ -233,6 +233,250 @@ How Graph Schemas and Generic Operations Enable Zero-Shot Domain Adaptation
   4. SYSTEM DESIGN
 
   4.1 Architecture on Google Cloud Platform
+{
+    "architecture": {
+      "name": "finetoo.co Schema-Driven AI Platform",
+      "platform": "Google Cloud Platform",
+      "components": [
+        {
+          "id": "gcs",
+          "name": "Cloud Storage (GCS)",
+          "type": "storage",
+          "purpose": "Raw file storage",
+          "stores": ["DXF", "XLSX", "DOCX", "PDF"],
+          "triggers": ["file.uploaded"]
+        },
+        {
+          "id": "pubsub",
+          "name": "Pub/Sub Topics",
+          "type": "messaging",
+          "topics": [
+            {
+              "name": "file.uploaded",
+              "triggers": ["parse_functions"]
+            },
+            {
+              "name": "file.parsed",
+              "triggers": ["graph_writer"]
+            },
+            {
+              "name": "graph.ready",
+              "triggers": ["query_service"]
+            }
+          ]
+        },
+        {
+          "id": "parse_dxf",
+          "name": "Parse DXF",
+          "type": "cloud_function",
+          "language": "python",
+          "input": "DXF file from GCS",
+          "output": {
+            "graph": "nodes and edges",
+            "schema": "operational metadata"
+          },
+          "publishes": "file.parsed"
+        },
+        {
+          "id": "parse_xlsx",
+          "name": "Parse XLSX",
+          "type": "cloud_function",
+          "language": "python",
+          "input": "XLSX file from GCS",
+          "output": {
+            "graph": "cells, formulas, sheets",
+            "schema": "operational metadata"
+          },
+          "publishes": "file.parsed"
+        },
+        {
+          "id": "parse_docx",
+          "name": "Parse DOCX",
+          "type": "cloud_function",
+          "language": "python",
+          "input": "DOCX file from GCS",
+          "output": {
+            "graph": "paragraphs, styles, sections",
+            "schema": "operational metadata"
+          },
+          "publishes": "file.parsed"
+        },
+        {
+          "id": "graph_db",
+          "name": "Graph Database",
+          "type": "database",
+          "options": ["Neo4j (Managed)", "TigerGraph"],
+          "stores": {
+            "graph_g": "nodes and edges from documents",
+            "schema_s": "operational metadata (unique, comparable, indexed properties)"
+          },
+          "query_languages": ["Cypher", "GSQL"]
+        },
+        {
+          "id": "query_service",
+          "name": "Query Service",
+          "type": "cloud_run",
+          "stateless": true,
+          "autoscale": true,
+          "operations": [
+            {
+              "step": 1,
+              "action": "Receive query",
+              "input": "Natural language query from user"
+            },
+            {
+              "step": 2,
+              "action": "Retrieve graph subgraph",
+              "method": "Cypher/GSQL query to graph DB"
+            },
+            {
+              "step": 3,
+              "action": "Retrieve schema",
+              "source": "graph_db"
+            },
+            {
+              "step": 4,
+              "action": "Discover operations",
+              "method": "Analyze schema metadata to find available operations"
+            },
+            {
+              "step": 5,
+              "action": "Call LLM",
+              "providers": ["Gemini", "Claude", "GPT"],
+              "context": ["query", "graph_subgraph", "schema", "operations", "few_shot_examples"]
+            },
+            {
+              "step": 6,
+              "action": "Execute operation plan",
+              "method": "Run sequence of operations returned by LLM"
+            },
+            {
+              "step": 7,
+              "action": "Return results + provenance",
+              "output": {
+                "answer": "natural language response",
+                "provenance": "entity handles, graph paths, source references"
+              }
+            }
+          ]
+        },
+        {
+          "id": "llm_api",
+          "name": "LLM API",
+          "type": "external_api",
+          "options": ["Gemini API", "Claude API", "GPT API"],
+          "purpose": "Query planning and operation composition",
+          "input": "Query + context (graph + schema + operations + examples)",
+          "output": "Operation sequence plan"
+        },
+        {
+          "id": "metadata_db",
+          "name": "Metadata Database",
+          "type": "postgresql",
+          "stores": {
+            "files": "file metadata, upload info",
+            "users": "user accounts, permissions",
+            "sessions": "query sessions, history",
+            "operations": "operation definitions, usage stats"
+          }
+        },
+        {
+          "id": "few_shot_kb",
+          "name": "Few-Shot Knowledge Base",
+          "type": "vector_database",
+          "implementation": "Pinecone",
+          "stores": {
+            "query_examples": "past queries with successful operation plans",
+            "corrections": "failed attempts and corrections"
+          },
+          "retrieval": "Semantic search by query similarity"
+        },
+        {
+          "id": "analytics",
+          "name": "BigQuery Analytics",
+          "type": "data_warehouse",
+          "logs": [
+            "user_queries",
+            "operation_sequences",
+            "graph_retrievals",
+            "llm_calls",
+            "execution_latency",
+            "cost_per_query",
+            "accuracy_feedback"
+          ],
+          "purpose": "System improvement and monitoring"
+        }
+      ],
+      "data_flow": [
+        {
+          "from": "gcs",
+          "to": "pubsub",
+          "event": "file.uploaded",
+          "trigger": "File uploaded to bucket"
+        },
+        {
+          "from": "pubsub",
+          "to": ["parse_dxf", "parse_xlsx", "parse_docx"],
+          "event": "file.uploaded",
+          "routing": "Based on file extension"
+        },
+        {
+          "from": ["parse_dxf", "parse_xlsx", "parse_docx"],
+          "to": "graph_db",
+          "data": {
+            "graph": "Nodes and edges",
+            "schema": "Operational metadata"
+          }
+        },
+        {
+          "from": "graph_db",
+          "to": "pubsub",
+          "event": "graph.ready"
+        },
+        {
+          "from": "query_service",
+          "to": "graph_db",
+          "operation": "Query subgraph (Cypher/GSQL)"
+        },
+        {
+          "from": "query_service",
+          "to": "few_shot_kb",
+          "operation": "Retrieve similar examples"
+        },
+        {
+          "from": "query_service",
+          "to": "llm_api",
+          "data": {
+            "query": "User's natural language query",
+            "context": "Graph + schema + operations + examples"
+          }
+        },
+        {
+          "from": "llm_api",
+          "to": "query_service",
+          "data": "Operation plan"
+        },
+        {
+          "from": "query_service",
+          "to": "metadata_db",
+          "operation": "Log query metadata"
+        },
+        {
+          "from": "query_service",
+          "to": "analytics",
+          "operation": "Log query, operations, latency, cost"
+        }
+      ],
+      "key_concepts": {
+        "no_fine_tuning": true,
+        "schema_driven": true,
+        "operation_discovery": "Operations discovered from schema metadata, not hardcoded",
+        "generic_primitives": ["match", "filter", "compare", "traverse", "aggregate", "groupby", "project", "join"],
+        "provenance": "Every answer includes references to source entities",
+        "zero_shot_generalization": "New file types work immediately with schema"
+      }
+    }
+  }
 
 
 
